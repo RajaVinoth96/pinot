@@ -65,22 +65,37 @@ jobs:
           cp pinot-perf/src/main/java/org/apache/pinot/perf/BenchmarkSegmentCreation.java \
             ../baseline/pinot-perf/src/main/java/org/apache/pinot/perf/
           (cd ../baseline && ./mvnw $MVN_FLAGS)
-      - name: Run segment benchmark (baseline/current alternated twice to cancel drift)
+      - name: Record kernel writeback settings
         run: |
-          run() {
-            local label=$1 tree=$2 name=$3
-            shift 3
-            echo "::group::$label $name"
-            (cd "$tree" && java -Xms4G -Xmx10G -cp "$tree/pinot-perf/target/pinot-perf-pkg/lib/*" \
-              org.openjdk.jmh.Main "$@" -jvmArgsAppend="$JVM_APPEND") > "results/$label-$name.txt" 2>&1
-            echo "exit=$?"; tail -5 "results/$label-$name.txt"
-            echo "::endgroup::"
-          }
-          for round in 1 2; do
-            for side in baseline current; do
-              if [ "$side" = baseline ]; then tree="$(cd .. && pwd)/baseline"; else tree="$PWD"; fi
-              # Writer benchmarks (bitmap, raw forward) already have Linux numbers from run 43667214291.
-              run "$side-r$round" "$tree" segment org.apache.pinot.perf.BenchmarkSegmentCreation -wi 2 -i 5 -f 1
+          sysctl vm.dirty_background_ratio vm.dirty_ratio vm.dirty_background_bytes vm.dirty_bytes \
+            vm.dirty_expire_centisecs vm.dirty_writeback_centisecs | tee results/sysctl.txt
+      - name: Raw fsync cost probe (per-byte and per-file cost of FileChannel.force)
+        run: java .github/bench/FsyncCost.java /tmp | tee results/fsync-cost.txt
+      - name: Time spent in sync calls during segment builds (strace) + background writeback (meminfo)
+        run: |
+          command -v strace || (sudo apt-get update -qq && sudo apt-get install -y -qq strace)
+          strace -V | head -1 | tee results/strace-version.txt
+          for side in baseline current; do
+            if [ "$side" = baseline ]; then tree="$(cd .. && pwd)/baseline"; else tree="$PWD"; fi
+            for combo in 500000:64 2000000:512; do
+              rows=${combo%%:*}; len=${combo##*:}; tag="$side-$rows-$len"
+              echo "::group::$tag"
+              # Sample dirty / under-writeback page cache (kB) once per second while the builds run.
+              ( while true; do
+                  echo "$(date +%s) $(awk '/^(Dirty|Writeback):/ {printf "%s=%s ", $1, $2}' /proc/meminfo)"
+                  sleep 1
+                done ) > "results/meminfo-$tag.txt" &
+              sampler=$!
+              # -w: wall-clock time spent inside each call (what the build actually waits for); -f: follow the JMH fork.
+              (cd "$tree" && strace -f --seccomp-bpf -w -c -e trace=fsync,fdatasync,msync -o "$OLDPWD/results/strace-$tag.txt" \
+                java -Xms4G -Xmx10G -cp "$tree/pinot-perf/target/pinot-perf-pkg/lib/*" org.openjdk.jmh.Main \
+                org.apache.pinot.perf.BenchmarkSegmentCreation -p _numRows=$rows -p _rawPayloadLength=$len \
+                -wi 0 -i 3 -f 1 -jvmArgsAppend="$JVM_APPEND") > "results/jmh-$tag.txt" 2>&1 \
+                || echo "::warning::strace/JMH run failed for $tag (see results/jmh-$tag.txt)"
+              kill $sampler
+              cat "results/strace-$tag.txt"
+              grep -E '^BenchmarkSegmentCreation' "results/jmh-$tag.txt" | grep -v ':' || true
+              echo "::endgroup::"
             done
           done
       - name: Summary
@@ -88,10 +103,15 @@ jobs:
         run: |
           {
             echo '```'
-            cat results/env.txt
-            for f in results/*-*.txt; do
-              echo "== $f"
-              grep -E '^Benchmark[A-Za-z]+\.[A-Za-z0-9]+ ' "$f" | grep -v ':' || true
+            cat results/env.txt results/sysctl.txt 2>/dev/null
+            echo; echo "== fsync cost probe"; cat results/fsync-cost.txt 2>/dev/null
+            for f in results/strace-*-*.txt; do
+              tag=${f#results/strace-}; tag=${tag%.txt}
+              echo; echo "== $tag (3 builds, no warmup)"
+              cat "$f"
+              grep -E '^BenchmarkSegmentCreation' "results/jmh-$tag.txt" | grep -v ':' || true
+              awk '{for (i=2;i<=NF;i++){split($i,kv,"="); if (kv[1]=="Dirty:" && kv[2]>d) d=kv[2]; if (kv[1]=="Writeback:" && kv[2]>w) w=kv[2]}}
+                   END {printf "peak Dirty=%d MB, peak Writeback=%d MB\n", d/1024, w/1024}' "results/meminfo-$tag.txt"
             done
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
