@@ -25,10 +25,15 @@ import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
+import java.util.Locale;
 
 
 public class FileUtils {
+  private static final boolean IS_WINDOWS =
+      System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
+
   private FileUtils() {
   }
 
@@ -176,6 +181,38 @@ public class FileUtils {
 
     if (topLevelException != null) {
       throw topLevelException;
+    }
+  }
+
+  /// Forces a regular file's contents and metadata to durable storage.
+  ///
+  /// Use this for files written through APIs that do not expose their [FileChannel] or file descriptor (for example
+  /// [java.io.FileWriter]). Syncing through a separately opened descriptor flushes the file's dirty pages.
+  /// @param file the regular file to sync
+  /// @throws IOException if the file cannot be opened or synced
+  public static void syncFile(File file)
+      throws IOException {
+    try (FileChannel channel = FileChannel.open(file.toPath(), StandardOpenOption.WRITE)) {
+      channel.force(true);
+    }
+  }
+
+  /// Forces a directory's entries to durable storage, so that files and sub-directories created, renamed or deleted in
+  /// it survive a crash.
+  ///
+  /// Syncing a file makes its contents durable but not its name; the name lives in the parent directory. Java has no
+  /// dedicated API for this, so the directory is opened read-only and forced. Windows does not allow opening a
+  /// directory this way, and NTFS journals directory changes, so failures there are ignored.
+  /// @param dir the directory to sync
+  /// @throws IOException if the directory cannot be synced on a platform that supports directory sync
+  public static void syncDirectory(File dir)
+      throws IOException {
+    try (FileChannel channel = FileChannel.open(dir.toPath(), StandardOpenOption.READ)) {
+      channel.force(true);
+    } catch (IOException e) {
+      if (!IS_WINDOWS) {
+        throw new IOException("Failed to fsync directory: " + dir, e);
+      }
     }
   }
 

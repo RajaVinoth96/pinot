@@ -18,11 +18,13 @@
  */
 package org.apache.pinot.common.utils;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 import org.mockito.InOrder;
 import org.testng.annotations.Test;
 
@@ -95,6 +97,47 @@ public class FileUtilsTest {
       FileUtils.forceMappedBuffers(buffer);
     } finally {
       Files.deleteIfExists(path);
+    }
+  }
+
+  @Test
+  public void testSyncFile()
+      throws IOException {
+    Path path = Files.createTempFile("FileUtilsTest", null);
+    try {
+      Files.writeString(path, "content");
+      FileUtils.syncFile(path.toFile());
+      assertEquals(Files.readString(path), "content");
+    } finally {
+      Files.deleteIfExists(path);
+    }
+  }
+
+  @Test
+  public void testSyncDirectory()
+      throws IOException {
+    Path dir = Files.createTempDirectory("FileUtilsTest");
+    try {
+      Files.createFile(dir.resolve("child"));
+      FileUtils.syncDirectory(dir.toFile());
+    } finally {
+      Files.deleteIfExists(dir.resolve("child"));
+      Files.deleteIfExists(dir);
+    }
+  }
+
+  @Test
+  public void testSyncDirectoryMissing() {
+    if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows")) {
+      // Directory sync failures are ignored on Windows.
+      return;
+    }
+    File missing = new File(System.getProperty("java.io.tmpdir"), "FileUtilsTest-missing-" + System.nanoTime());
+    try {
+      FileUtils.syncDirectory(missing);
+      fail("Expected IOException for a missing directory");
+    } catch (IOException e) {
+      // Expected
     }
   }
 }

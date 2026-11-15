@@ -1471,6 +1471,8 @@ public abstract class BaseTableDataManager implements TableDataManager {
     try {
       FileUtils.deleteDirectory(indexDir);
       FileUtils.moveDirectory(untarredSegmentDir, indexDir);
+      // The segment's files were synced during untar; sync the parent so the renamed directory entry is durable too.
+      org.apache.pinot.common.utils.FileUtils.syncDirectory(indexDir.getParentFile());
       return indexDir;
     } catch (Exception e) {
       _serverMetrics.addMeteredTableValue(_tableNameWithType, ServerMeter.SEGMENT_DIR_MOVEMENT_FAILURES, 1);

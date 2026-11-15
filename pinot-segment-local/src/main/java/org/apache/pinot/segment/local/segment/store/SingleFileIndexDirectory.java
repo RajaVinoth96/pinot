@@ -481,6 +481,10 @@ class SingleFileIndexDirectory extends ColumnIndexDirectory {
     try (PrintWriter writer = new PrintWriter(new BufferedWriter(new FileWriter(mapFile)))) {
       persistIndexMaps(retained, writer);
     }
+    // The index file was forced before the rename. Make the new index_map durable, then sync the directory so the
+    // rename and the re-created index_map entry both survive a crash.
+    org.apache.pinot.common.utils.FileUtils.syncFile(mapFile);
+    org.apache.pinot.common.utils.FileUtils.syncDirectory(_segmentDirectory);
   }
 
   @Override

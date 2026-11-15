@@ -494,6 +494,8 @@ public class PredownloadScheduler {
           predownloadSegmentInfo.getSegmentDataDir(_tableInfoMap.get(predownloadSegmentInfo.getTableNameWithType()));
       FileUtils.deleteDirectory(indexDir);
       FileUtils.moveDirectory(untaredSegDir, indexDir);
+      // The segment's files were synced during untar; sync the parent so the renamed directory entry is durable too.
+      org.apache.pinot.common.utils.FileUtils.syncDirectory(indexDir.getParentFile());
       return indexDir;
     } catch (Exception e) {
       LOGGER.error("Failed to move segment: {} of table: {}", predownloadSegmentInfo.getSegmentName(),
@@ -517,6 +519,8 @@ public class PredownloadScheduler {
           predownloadSegmentInfo.getSegmentDataDir(_tableInfoMap.get(predownloadSegmentInfo.getTableNameWithType()));
       FileUtils.deleteDirectory(indexDir);
       FileUtils.moveDirectory(untaredSegDir, indexDir);
+      // The segment's files were synced during untar; sync the parent so the renamed directory entry is durable too.
+      org.apache.pinot.common.utils.FileUtils.syncDirectory(indexDir.getParentFile());
       LOGGER.info("Successfully downloaded segment: {} of table: {} to index dir: {}", segmentName, tableNameWithType,
           indexDir);
       return indexDir;

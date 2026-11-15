@@ -30,8 +30,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.apache.commons.compress.archivers.ArchiveEntry;
 import org.apache.commons.compress.archivers.ArchiveInputStream;
 import org.apache.commons.compress.archivers.ArchiveOutputStream;
@@ -217,6 +219,8 @@ public class TarCompressionUtils {
       outputDirCanonicalPath += File.separator;
     }
     List<File> untarredFiles = new ArrayList<>();
+    // Directories whose entries changed during extraction; synced at the end so the extracted names are durable too.
+    Set<File> dirsToSync = syncExtractedFiles ? new LinkedHashSet<>() : null;
     try (InputStream bufferedIn = new BufferedInputStream(inputStream);
         InputStream compressorIn = COMPRESSOR_STREAM_FACTORY.createCompressorInputStream(bufferedIn);
         ArchiveInputStream tarIn = new TarArchiveInputStream(compressorIn)) {
@@ -236,6 +240,9 @@ public class TarCompressionUtils {
           }
           if (!outputFile.isDirectory() && !outputFile.mkdirs()) {
             throw new IOException(String.format("Failed to create directory: %s", outputFile));
+          }
+          if (dirsToSync != null) {
+            addDirAndAncestors(outputFile, outputDir, dirsToSync);
           }
         } else {
           File parentFile = outputFile.getParentFile();
@@ -267,13 +274,31 @@ public class TarCompressionUtils {
               }
             }
           }
+          if (dirsToSync != null) {
+            addDirAndAncestors(parentFile, outputDir, dirsToSync);
+          }
         }
         untarredFiles.add(outputFile);
       }
     } catch (CompressorException e) {
       throw new IOException(e);
     }
+    if (dirsToSync != null) {
+      for (File dir : dirsToSync) {
+        FileUtils.syncDirectory(dir);
+      }
+    }
     return untarredFiles;
+  }
+
+  /// Adds `dir` and each of its ancestors up to and including `rootDir`. `dir` must have been built by appending path
+  /// components to `rootDir`, so walking up the parents reaches it.
+  private static void addDirAndAncestors(File dir, File rootDir, Set<File> dirs) {
+    for (File current = dir; current != null && dirs.add(current); current = current.getParentFile()) {
+      if (current.equals(rootDir)) {
+        return;
+      }
+    }
   }
 
   /// Un-tars one single file with the given file name from a compressed tar file.

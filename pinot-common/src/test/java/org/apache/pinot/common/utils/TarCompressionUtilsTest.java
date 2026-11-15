@@ -38,6 +38,7 @@ import org.testng.annotations.Test;
 
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
 
 
@@ -199,6 +200,29 @@ public class TarCompressionUtilsTest {
     } catch (IOException e) {
       // Expected
     }
+  }
+
+  @Test
+  public void testUntarDurablyNestedDirectories()
+      throws IOException {
+    // Durable untar syncs every directory it creates; exercise nested and empty directories.
+    String dirName = "durableNestedDir";
+    File dir = new File(DATA_DIR, dirName);
+    FileUtils.write(new File(dir, "top"), "topContent", StandardCharsets.UTF_8);
+    FileUtils.write(new File(dir, "sub/inner/leaf"), "leafContent", StandardCharsets.UTF_8);
+    FileUtils.forceMkdir(new File(dir, "emptySub"));
+
+    File compressedTarFile = new File(TAR_DIR, dirName + TarCompressionUtils.TAR_GZ_FILE_EXTENSION);
+    TarCompressionUtils.createCompressedTarFile(dir, compressedTarFile);
+
+    File outputDir = new File(UNTAR_DIR, "durableNested");
+    List<File> untarredFiles = TarCompressionUtils.untarDurably(compressedTarFile, outputDir);
+    File untarredDir = untarredFiles.get(0);
+    assertEquals(untarredDir, new File(outputDir, dirName));
+    assertEquals(FileUtils.readFileToString(new File(untarredDir, "top"), StandardCharsets.UTF_8), "topContent");
+    assertEquals(FileUtils.readFileToString(new File(untarredDir, "sub/inner/leaf"), StandardCharsets.UTF_8),
+        "leafContent");
+    assertTrue(new File(untarredDir, "emptySub").isDirectory());
   }
 
   @Test
