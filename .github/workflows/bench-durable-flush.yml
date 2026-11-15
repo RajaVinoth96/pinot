@@ -65,7 +65,7 @@ jobs:
           cp pinot-perf/src/main/java/org/apache/pinot/perf/BenchmarkSegmentCreation.java \
             ../baseline/pinot-perf/src/main/java/org/apache/pinot/perf/
           (cd ../baseline && ./mvnw $MVN_FLAGS)
-      - name: Run benchmarks (baseline/current alternated twice to cancel drift)
+      - name: Run segment benchmark (baseline/current alternated twice to cancel drift)
         run: |
           run() {
             local label=$1 tree=$2 name=$3
@@ -79,11 +79,8 @@ jobs:
           for round in 1 2; do
             for side in baseline current; do
               if [ "$side" = baseline ]; then tree="$(cd .. && pwd)/baseline"; else tree="$PWD"; fi
-              run "$side-r$round" "$tree" segment org.apache.pinot.perf.BenchmarkSegmentCreation -wi 3 -i 10 -f 1
-              run "$side-r$round" "$tree" bitmap org.apache.pinot.perf.BenchmarkOffheapBitmapInvertedIndexCreator \
-                -p _numDocs=10000000 -wi 2 -i 5 -f 1
-              run "$side-r$round" "$tree" rawfwd org.apache.pinot.perf.BenchmarkRawForwardIndexWriter \
-                -p _records=10000 -wi 2 -i 5 -f 1
+              # Writer benchmarks (bitmap, raw forward) already have Linux numbers from run 43667214291.
+              run "$side-r$round" "$tree" segment org.apache.pinot.perf.BenchmarkSegmentCreation -wi 2 -i 5 -f 1
             done
           done
       - name: Summary
