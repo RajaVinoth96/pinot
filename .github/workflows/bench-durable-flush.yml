@@ -69,34 +69,24 @@ jobs:
         run: |
           sysctl vm.dirty_background_ratio vm.dirty_ratio vm.dirty_background_bytes vm.dirty_bytes \
             vm.dirty_expire_centisecs vm.dirty_writeback_centisecs | tee results/sysctl.txt
-      - name: Raw fsync cost probe (per-byte and per-file cost of FileChannel.force)
-        run: java .github/bench/FsyncCost.java /tmp | tee results/fsync-cost.txt
-      - name: Time spent in sync calls during segment builds (strace) + background writeback (meminfo)
+      # Earlier runs: fsync cost probe + strace -c totals (run 43720045228). This run logs every sync call individually.
+      - name: Per-call sync trace (one build per config; file path + duration of every fsync)
         run: |
           command -v strace || (sudo apt-get update -qq && sudo apt-get install -y -qq strace)
-          strace -V | head -1 | tee results/strace-version.txt
-          for side in baseline current; do
+          for combo in current:2000000:512 current:500000:64 baseline:2000000:512; do
+            IFS=: read -r side rows len <<< "$combo"
             if [ "$side" = baseline ]; then tree="$(cd .. && pwd)/baseline"; else tree="$PWD"; fi
-            for combo in 500000:64 2000000:512; do
-              rows=${combo%%:*}; len=${combo##*:}; tag="$side-$rows-$len"
-              echo "::group::$tag"
-              # Sample dirty / under-writeback page cache (kB) once per second while the builds run.
-              ( while true; do
-                  echo "$(date +%s) $(awk '/^(Dirty|Writeback):/ {printf "%s=%s ", $1, $2}' /proc/meminfo)"
-                  sleep 1
-                done ) > "results/meminfo-$tag.txt" &
-              sampler=$!
-              # -w: wall-clock time spent inside each call (what the build actually waits for); -f: follow the JMH fork.
-              (cd "$tree" && strace -f --seccomp-bpf -w -c -e trace=fsync,fdatasync,msync -o "$OLDPWD/results/strace-$tag.txt" \
-                java -Xms4G -Xmx10G -cp "$tree/pinot-perf/target/pinot-perf-pkg/lib/*" org.openjdk.jmh.Main \
-                org.apache.pinot.perf.BenchmarkSegmentCreation -p _numRows=$rows -p _rawPayloadLength=$len \
-                -wi 0 -i 3 -f 1 -jvmArgsAppend="$JVM_APPEND") > "results/jmh-$tag.txt" 2>&1 \
-                || echo "::warning::strace/JMH run failed for $tag (see results/jmh-$tag.txt)"
-              kill $sampler
-              cat "results/strace-$tag.txt"
-              grep -E '^BenchmarkSegmentCreation' "results/jmh-$tag.txt" | grep -v ':' || true
-              echo "::endgroup::"
-            done
+            tag="$side-$rows-$len"
+            echo "::group::$tag"
+            # -tt: timestamps, -T: duration of each call, -y: file path behind each fd (msync has no fd, so no path).
+            (cd "$tree" && strace -f --seccomp-bpf -tt -T -y -e trace=fsync,fdatasync,msync \
+              -o "$OLDPWD/results/calls-$tag.txt" \
+              java -Xms4G -Xmx10G -cp "$tree/pinot-perf/target/pinot-perf-pkg/lib/*" org.openjdk.jmh.Main \
+              org.apache.pinot.perf.BenchmarkSegmentCreation -p _numRows=$rows -p _rawPayloadLength=$len \
+              -wi 0 -i 1 -f 1 -jvmArgsAppend="$JVM_APPEND") > "results/jmh-$tag.txt" 2>&1 \
+              || echo "::warning::strace/JMH run failed for $tag (see results/jmh-$tag.txt)"
+            python3 .github/bench/parse_strace.py "results/calls-$tag.txt" | tee "results/calls-summary-$tag.txt"
+            echo "::endgroup::"
           done
       - name: Summary
         if: always()
@@ -104,14 +94,11 @@ jobs:
           {
             echo '```'
             cat results/env.txt results/sysctl.txt 2>/dev/null
-            echo; echo "== fsync cost probe"; cat results/fsync-cost.txt 2>/dev/null
-            for f in results/strace-*-*.txt; do
-              tag=${f#results/strace-}; tag=${tag%.txt}
-              echo; echo "== $tag (3 builds, no warmup)"
-              cat "$f"
+            for f in results/calls-summary-*.txt; do
+              tag=${f#results/calls-summary-}; tag=${tag%.txt}
+              echo; echo "== $tag (1 build, every fsync listed slowest first)"
               grep -E '^BenchmarkSegmentCreation' "results/jmh-$tag.txt" | grep -v ':' || true
-              awk '{for (i=2;i<=NF;i++){split($i,kv,"="); if (kv[1]=="Dirty:" && kv[2]>d) d=kv[2]; if (kv[1]=="Writeback:" && kv[2]>w) w=kv[2]}}
-                   END {printf "peak Dirty=%d MB, peak Writeback=%d MB\n", d/1024, w/1024}' "results/meminfo-$tag.txt"
+              head -60 "$f"
             done
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
